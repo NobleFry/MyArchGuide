@@ -7,6 +7,7 @@
 | [install.sh](install.sh) | 基础系统安装：UEFI + LUKS2 + Btrfs + systemd/sd-encrypt + GRUB，含全盘加密与休眠 | Arch Live ISO（root） |
 | [post-install.sh](post-install.sh) | 桌面环境安装：KDE Plasma 6 + SDDM、multilib、Fcitx5、字体、蓝牙、Timeshift、休眠参数、可选 linux-zen | 已装好的系统（root） |
 | [check.sh](check.sh) | 排查脚本：核对加密启动与休眠相关配置 | 已装好的系统 |
+| [make-usb.sh](make-usb.sh) | 制作可启动 U 盘：清空/重建 + FAT32 ESP + exFAT 数据区 + GRUB2 loopback 多启动菜单 | 已装好的系统（root） |
 
 ## install.sh
 
@@ -58,3 +59,16 @@ bash check.sh
 1. `----- BTRFS OFFSET -----` 输出的数值应与 `----- RESUME OFFSET -----` 一致；不一致说明 GRUB 参数没生效，需重新 `grub-mkconfig -o /boot/grub/grub.cfg` 并重启。
 2. `----- RESUME DEVICE -----` 应为休眠分区/设备的 `major:minor`，加密根通常对应 `/dev/mapper/cryptroot` 的设备号（`ls -l /dev/mapper/` 与 `stat -c '%t:%T'` 可核对）。
 3. swapfile 重建或 `btrfs filesystem resize` 后 offset 会变化，必须重新写入 GRUB 参数并再生 initramfs（`mkinitcpio -P`）。
+
+## make-usb.sh
+
+```bash
+sudo bash make-usb.sh                 # 默认 fast 擦除（秒级）
+sudo WIPE_MODE=full bash make-usb.sh  # 全盘写 0（慢，可防取证恢复）
+```
+
+交互流程：列出 U 盘 → 输入设备（如 `/dev/sda`）→ 确认 → 擦除 → 建 GPT（`1 GiB FAT32 ESP` + `其余 exFAT`）→ 装 GRUB → 部署同目录的 [grub-usb.cfg](grub-usb.cfg) → 挂载数据区到 `/mnt/data` 并建 `/ISO`。
+
+- 只对 `TRAN=usb` 的设备生效，认错会直接报错退出。
+- 需要已装 `dosfstools`、`exfatprogs`、`parted`、`grub`。
+- 制作与用法（含 Windows 镜像限制、QEMU 预演）见 [制作可启动 U 盘](../docs/bootable-usb.md)。

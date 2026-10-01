@@ -16,12 +16,15 @@ MyArchGuide/
 ├── README.md                  # 本文件：总索引
 ├── docs/
 │   ├── environment.md         # 系统基本配置（显卡驱动、niri/dms、zsh、paru、常用应用）
-│   └── virtualization.md      # KVM 虚拟机与显卡直通
+│   ├── virtualization.md      # KVM 虚拟机与显卡直通
+│   └── bootable-usb.md        # 制作可启动 U 盘（GRUB2 loopback 多启动）
 ├── scripts/
 │   ├── README.md              # 脚本用法说明
 │   ├── install.sh             # 基础系统安装（UEFI + LUKS2 + Btrfs + GRUB）
 │   ├── post-install.sh        # 桌面环境安装（KDE Plasma + SDDM + Fcitx5）
-│   └── check.sh               # 休眠 / 加密启动排查
+│   ├── check.sh               # 休眠 / 加密启动排查
+│   ├── make-usb.sh            # 制作多启动 U 盘（清空重建 + 装 GRUB）
+│   └── grub-usb.cfg           # GRUB 多启动菜单模板
 └── tools/                     # 装机后工具集
     ├── thermal-tuning/        # 温控四档（tempctl）+ niri 快捷键
     └── nvidia-switch/         # 独显 vfio-pci ⇄ 原生驱动切换（Tk GUI）
@@ -33,7 +36,8 @@ MyArchGuide/
 | --- | --- |
 | [系统基本配置](docs/environment.md) | 显卡驱动、dankinstall 安装 niri 和 dms、zsh 配置、aur 助手 paru、常用应用与 xanmod 内核 |
 | [虚拟机与显卡直通](docs/virtualization.md) | KVM 安装与嵌套虚拟化、Windows 11 虚拟机、VirtIO-FS 文件共享、独显直通、Looking-glass、VFIO 解绑 |
-| [脚本说明](scripts/README.md) | 三个脚本的用途、运行环境与流程 |
+| [制作启动盘](docs/bootable-usb.md) | GRUB2 loopback 多启动 U 盘、擦除模式、添加启动项、Windows 镜像限制、QEMU 预演 |
+| [脚本说明](scripts/README.md) | 四个脚本的用途、运行环境与流程 |
 
 ## 工具（装机后）
 
@@ -44,12 +48,13 @@ MyArchGuide/
 
 ## 安装流程
 
-1. Arch Live ISO 中运行 [scripts/install.sh](scripts/install.sh)，装好带全盘加密与休眠的基础系统。
-2. 进入系统后以 root 运行 [scripts/post-install.sh](scripts/post-install.sh)，安装 KDE Plasma 与桌面组件。
-3. 按 [docs/environment.md](docs/environment.md) 配置显卡驱动、shell 与应用。
-4. 需要跑 Windows 虚拟机或做独显直通，参考 [docs/virtualization.md](docs/virtualization.md)。
-5. 休眠有问题时用 [scripts/check.sh](scripts/check.sh) 对照排查。
-6. 装机后的两件常用调优：温控用 [tools/thermal-tuning](tools/thermal-tuning/README.md)，独显直通切换用 [tools/nvidia-switch](tools/nvidia-switch/README.md)。
+1. 用 [scripts/make-usb.sh](scripts/make-usb.sh) 做一张 Arch Live 启动盘，详见 [docs/bootable-usb.md](docs/bootable-usb.md)。
+2. 在 Arch Live ISO 中运行 [scripts/install.sh](scripts/install.sh)，装好带全盘加密与休眠的基础系统。
+3. 进入系统后以 root 运行 [scripts/post-install.sh](scripts/post-install.sh)，安装 KDE Plasma 与桌面组件。
+4. 按 [docs/environment.md](docs/environment.md) 配置显卡驱动、shell 与应用。
+5. 需要跑 Windows 虚拟机或做独显直通，参考 [docs/virtualization.md](docs/virtualization.md)。
+6. 休眠有问题时用 [scripts/check.sh](scripts/check.sh) 对照排查。
+7. 装机后的两件常用调优：温控用 [tools/thermal-tuning](tools/thermal-tuning/README.md)，独显直通切换用 [tools/nvidia-switch](tools/nvidia-switch/README.md)。
 
 ## 文档格式检查
 
