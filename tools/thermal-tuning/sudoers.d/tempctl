@@ -1,0 +1,2 @@
+# 允许 wheel 组免密执行三个档位（仅限 root 拥有的 /usr/local/bin/tempctl，且不接受其它子命令）
+%wheel ALL=(root) NOPASSWD: /usr/local/bin/tempctl save, /usr/local/bin/tempctl normal, /usr/local/bin/tempctl game, /usr/local/bin/tempctl max

@@ -1,0 +1,40 @@
+# Maintainer: admin <admin@localhost>
+# 本地打包的 NVIDIA GPU vfio-pci/原生驱动切换工具（Tk GUI + pkexec 提权）
+
+pkgname=nvidia-switch-gui
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Switch NVIDIA GPU between vfio-pci passthrough and the native driver (Tk GUI, pkexec)"
+arch=('any')
+license=('custom')
+# python：GUI 与核心脚本均为 Python 3（仅标准库）
+# tk：提供 tkinter/_tkinter 运行库
+# pciutils(lspci) psmisc(fuser) kmod(modprobe/rmmod) procps-ng(sysctl)：核心脚本使用
+# polkit：提供 pkexec 图形提权
+depends=('python' 'tk' 'pciutils' 'psmisc' 'kmod' 'procps-ng' 'polkit')
+optdepends=(
+  'libvirt: 通过 virsh start win11 启动 Windows 11 虚拟机'
+  'polkit-kde-agent: KDE 图形密码验证代理（GNOME 用户可换 polkit-gnome）'
+  'breeze-icons: 启动器图标 preferences-desktop（adwaita-icon-theme 亦可）'
+)
+source=(
+  'switch'
+  'switch_gui.py'
+  'nvidia-switch.desktop'
+)
+# 本地源码副本，不做校验和（如上传 AUR 请改为 sha256sums 实测值）
+sha256sums=('SKIP' 'SKIP' 'SKIP')
+
+package() {
+  # GUI 主程序 → PATH
+  install -Dm755 switch_gui.py \
+    "$pkgdir/usr/bin/nvidia-switch-gui"
+
+  # 无扩展名的核心脚本（由 GUI 以 pkexec + python3 调用）
+  install -Dm755 switch \
+    "$pkgdir/usr/lib/nvidia-switch/switch"
+
+  # 系统级应用启动器（应用菜单可搜索；pacman hook 自动刷新 desktop 数据库）
+  install -Dm644 nvidia-switch.desktop \
+    "$pkgdir/usr/share/applications/nvidia-switch.desktop"
+}

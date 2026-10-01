@@ -146,6 +146,8 @@ sudo fuser -k -9 /dev/nvidia*
 
 #### 4.1.4 显卡绑定 vfio_pci
 
+> 本节与第 6 节的手动命令已可由 [tools/nvidia-switch](../tools/nvidia-switch/README.md) 一键完成（GUI/CLI 均可）；下面保留手动步骤，便于理解原理与排障。
+
 首先确认无进程使用 NVIDIA 后，移除所有模块：
 
 ```bash
@@ -229,6 +231,8 @@ $$
 最接近 31.25 的是 $2^6 = 64$，因此上面的值为 64。
 
 ## 6 VFIO 解绑
+
+> 同样可用 [tools/nvidia-switch](../tools/nvidia-switch/README.md) 的「恢复 NVIDIA 原生驱动」一键完成。
 
 确认虚拟机已经关闭后，解绑 VFIO：
 

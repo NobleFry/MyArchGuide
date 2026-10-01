@@ -1,0 +1,15 @@
+[Unit]
+Description=tempctl: 开机应用 max 档（不设限；想降温自己按快捷键切档）
+After=multi-user.target power-profiles-daemon.service
+Wants=power-profiles-daemon.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# power-profiles-daemon 在 dbus 激活后才会写 EPP，稍等一下再覆盖，保证我们的值最终生效
+ExecStartPre=-/usr/bin/sleep 3
+ExecStart=/usr/local/bin/tempctl max
+
+[Install]
+WantedBy=multi-user.target
+

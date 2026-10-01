@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=NVIDIA GPU 驱动切换
+GenericName=GPU Driver Switcher
+Comment=在 vfio-pci 直通与 NVIDIA 原生驱动之间切换（点击操作时弹窗索取管理员密码）
+Exec=/usr/bin/nvidia-switch-gui
+Icon=preferences-desktop
+Terminal=false
+Categories=System;Settings;HardwareSettings;
+Keywords=nvidia;gpu;vfio;driver;passthrough;hugepage;驱动;显卡;直通;
+StartupNotify=false

@@ -1,0 +1,334 @@
+#!/usr/bin/env python3
+
+import glob  # 文件名匹配
+import logging  # 日志记录
+import os  # 系统操作接口
+import subprocess  # 自进程管理
+import sys  # Python运行时环境交互
+import time  # 时间处理与暂停
+from pathlib import Path  # 面向对象的路径操作
+
+# ================= 配置区域 =================
+PCI_DEVICES = ["0000:01:00.0", "0000:01:00.1"]
+TARGET_HUGEPAGES = 4096  # 4096 * 2MB = 8192MB (8GB) 目标大页数量
+
+
+# ================= 终端彩色日志配置 =================
+class Colors:
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    RED = "\033[91m"
+    CYAN = "\033[96m"
+    BOLD = "\033[1m"
+    RESET = "\033[0m"
+
+
+class ColoredFormatter(logging.Formatter):
+    def format(self, record):
+        if record.levelno == logging.INFO:
+            return f"{Colors.GREEN}{super().format(record)}{Colors.RESET}"
+        elif record.levelno == logging.WARNING:
+            return f"{Colors.YELLOW}{super().format(record)}{Colors.RESET}"
+        elif record.levelno == logging.ERROR:
+            return f"{Colors.RED}{super().format(record)}{Colors.RESET}"
+        return super().format(record)
+
+
+logger = logging.getLogger(__name__)
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(ColoredFormatter("%(asctime)s [%(levelname)s] %(message)s"))
+logger.setLevel(logging.INFO)
+logger.addHandler(handler)
+logger.propagate = False
+
+
+# ================= 核心辅助函数 =================
+def check_root():
+    """检查是否拥有root权限"""
+    if os.getuid() != 0:
+        logger.error("该脚本需要 root 权限，请使用 'sudo' 运行!")
+        sys.exit(1)
+
+
+def run_cmd(cmd, check=True, ignore_error=False):
+    """
+    统一的命令执行辅助函数
+    :param cmd: 命令数组或字符串
+    :param check: 是否检查返回码（非0即报错）
+    :param ignore_error: 出错时是否仅打印警告而不退出
+    """
+
+    is_shell = isinstance(cmd, str)
+    cmd_str = cmd if is_shell else " ".join(cmd)
+    logger.info(f"正在执行: {cmd_str}")
+
+    try:
+        result = subprocess.run(
+            cmd, shell=is_shell, check=check, capture_output=True, text=True
+        )
+        if result.stdout.strip():
+            logger.debug(f"输出:\n{result.stdout.strip()}")
+        return result
+    except subprocess.CalledProcessError as e:
+        err_msg = e.stderr.strip() or e.stdout.strip()
+        if ignore_error:
+            logger.warning(f"命令执行返回非零值(已忽略): {err_msg}")
+            return e
+        else:
+            logger.error(f"命令执行失败，错误信息: {err_msg}")
+            sys.exit(e.returncode)
+
+
+def sysfs_write(path_str: str, content: str, ignore_missing=False):
+    """安全地向 /sys 节点写入内容 (替代 echo xxx | sudo tee ...)"""
+    logger.info(f"写入 sysfs: '{content}' -> {path_str}")
+    path = Path(path_str)
+
+    if not path.exists():
+        if ignore_missing:
+            logger.error(f"目标节点不存在(以跳过): {path_str}")
+            return
+        else:
+            logger.error(f"目标节点不存在: {path_str}")
+            sys.exit(1)
+
+    try:
+        path.write_text(content + "\n")
+    except (PermissionError, FileNotFoundError, OSError) as e:
+        if ignore_missing:
+            logger.warning(f"写入节点 {path_str} 失败(已忽略): {e}")
+        else:
+            logger.error(f"写入节点 {path_str} 失败: {e}")
+            sys.exit(1)
+
+
+def verify_driver_status(target_driver):
+    """验证并彩色打印驱动状态"""
+    logger.info("=== 验证 GPU 驱动状态 ===")
+    res = run_cmd("lspci -k | grep -A 2 -i nvidia", check=False)
+
+    print(f"\n{Colors.BOLD}{Colors.CYAN}[当前 NVIDIA 设备驱动状态]:{Colors.RESET}")
+    if res.stdout:
+        output = res.stdout.replace(
+            target_driver, f"{Colors.GREEN}{target_driver}{Colors.RESET}"
+        )
+        print(output)
+    else:
+        print("未获取到 lspci 信息")
+
+
+def ask_yes_no(prompt: str, default: bool = False) -> bool:
+    """提供 Yes/No 的交互式询问"""
+    default_hint = "[y/N]" if not default else "[Y/n]"
+    while True:
+        choice = input(f"{Colors.BOLD}{Colors.YELLOW}{prompt} {default_hint}: {Colors.RESET}").strip().lower()
+        if not choice:
+            return default
+        if choice in ['y', 'yes']:
+            return True
+        if choice in ['n', 'no']:
+            return False
+        print(f"{Colors.RED}输入无效，请输入 y 或 n。{Colors.RESET}")
+
+
+# ================= 内存大页管理 =================
+def setup_hugepages(target_pages: int):
+    """清理内存碎片并动态申请 2MB 内存大页"""
+    logger.info(f"=== 动态配置 2MB 内存大页 (目标: {target_pages} 页 / {target_pages * 2 // 1024} GB) ===")
+
+    # 1. 刷新文件系统缓存并整理物理内存碎片
+    logger.info("正在清理内存缓存与碎片以凑出连续物理内存...")
+    run_cmd("sync")
+    sysfs_write("/proc/sys/vm/drop_caches", "3")
+    sysfs_write("/proc/sys/vm/compact_memory", "1")
+    time.sleep(1)
+
+    # 2. 使用 sysctl 写入申请目标大页数
+    run_cmd(f"sysctl -w vm.nr_hugepages={target_pages}")
+
+    # 3. 校验实际分配成功的大页数量
+    actual_pages_str = Path("/proc/sys/vm/nr_hugepages").read_text().strip()
+    actual_pages = int(actual_pages_str)
+
+    if actual_pages >= target_pages:
+        logger.info(f"大页内存申请成功! 当前已预留大页数: {actual_pages} (满足要求)")
+    else:
+        logger.warning(
+            f"大页内存部分申请失败! 目标: {target_pages}, 实际成功预留: {actual_pages} "
+            f"(缺失 {target_pages - actual_pages} 页)。请尝试关闭宿主机占用内存的程序后重试。"
+        )
+
+
+def release_hugepages():
+    """释放内存大页归还给宿主机"""
+    logger.info("=== 释放内存大页归还给宿主机 ===")
+    run_cmd("sysctl -w vm.nr_hugepages=0")
+    logger.info("大页内存已完全释放 (vm.nr_hugepages = 0)。")
+
+
+# ================= 业务逻辑 =================
+def bind_to_vfio(manage_hugepages: bool = False):
+    """将 NVIDIA 显卡解绑并绑定到 VFIO"""
+    logger.info("=== 目标: 绑定设备到 VFIO (直通模式) ===")
+
+    # ---------------------------------------------------------
+    # Step 1: 检查并终止占用显卡及独显声卡的进程
+    # ---------------------------------------------------------
+    logger.info("--- Step 1: 检查并终止占用显卡与 HDMI 声卡的进程 ---")
+
+    # 1.1 先尝试优雅地将 HDMI 声卡从 snd_hda_intel 解绑
+    audio_pci = "0000:01:00.1"
+    sysfs_write(
+        "/sys/bus/pci/drivers/snd_hda_intel/unbind", audio_pci, ignore_missing=True
+    )
+
+    # 1.2 汇总显卡设备节点与声卡设备节点
+    gpu_targets = glob.glob("/dev/nvidia*") + ["/dev/dri/card0", "/dev/dri/renderD129"]
+    snd_targets = glob.glob(f"/dev/snd/by-path/*{audio_pci}*")
+    targets = gpu_targets + snd_targets
+
+    existing_targets = [t for t in targets if os.path.exists(t)]
+
+    if existing_targets:
+        run_cmd(["fuser", "-v"] + existing_targets, check=False, ignore_error=True)
+        run_cmd(
+            ["fuser", "-k", "-9"] + existing_targets, check=False, ignore_error=True
+        )
+        time.sleep(1)
+
+        max_retries = 5
+        for attempt in range(max_retries):
+            time.sleep(1)
+            res = run_cmd(["fuser"] + existing_targets, check=False, ignore_error=True)
+            if res.returncode != 0:
+                logger.info("所有显卡及独显声卡占用进程已成功清理")
+                break
+            else:
+                logger.warning(
+                    f"仍有进程占用设备，等待清理中... ({attempt + 1}/{max_retries})"
+                )
+        else:
+            logger.error("无法终止占用显卡/声卡的进程！请检查是否有 D 状态进程。")
+            sys.exit(1)
+
+    # ---------------------------------------------------------
+    # Step 2: 卸载内核模块
+    # ---------------------------------------------------------
+    logger.info("--- Step 2: 卸载 NVIDIA 内核模块 ---")
+    for mod in ["nvidia_drm", "nvidia_modeset", "nvidia_uvm", "nvidia"]:
+        run_cmd(["rmmod", mod], check=False, ignore_error=True)
+
+    # ---------------------------------------------------------
+    # Step 3: 加载 VFIO 内核模块
+    # ---------------------------------------------------------
+    logger.info("--- Step 3: 加载 VFIO 内核模块 ---")
+    run_cmd(["modprobe", "vfio-pci"])
+
+    # ---------------------------------------------------------
+    # Step 4: 配置 PCI 设备并触发绑定
+    # ---------------------------------------------------------
+    logger.info("--- Step 4: 配置 PCI 设备并触发绑定 ---")
+    for dev in PCI_DEVICES:
+        sysfs_write(f"/sys/bus/pci/devices/{dev}/driver_override", "vfio-pci")
+        sysfs_write("/sys/bus/pci/drivers_probe", dev)
+
+    # ---------------------------------------------------------
+    # Step 5: 分配内存大页
+    # ---------------------------------------------------------
+    if manage_hugepages:
+        logger.info("--- Step 5: 分配虚拟机内存大页 ---")
+        setup_hugepages(TARGET_HUGEPAGES)
+    else:
+        logger.info("--- Step 5: 跳过分配虚拟机内存大页 ---")
+
+    verify_driver_status("vfio-pci")
+
+
+def bind_to_nvidia(manage_hugepages: bool = False):
+    """从 VFIO 解绑并恢复 NVIDIA 原生驱动"""
+    logger.info("=== 目标: 恢复 NVIDIA 原生驱动 ===")
+
+    # ---------------------------------------------------------
+    # Step 0: 释放内存大页给宿主机
+    # ---------------------------------------------------------
+    if manage_hugepages:
+        logger.info("--- Step 0: 释放内存大页 ---")
+        release_hugepages()
+    else:
+        logger.info("--- Step 0: 跳过释放内存大页 ---")
+
+    # ---------------------------------------------------------
+    # Step 1: 清除 Driver Override 覆盖记录
+    # ---------------------------------------------------------
+    logger.info("--- Step 1: 清除 Driver Override 覆盖记录 ---")
+    for dev in PCI_DEVICES:
+        sysfs_write(f"/sys/bus/pci/devices/{dev}/driver_override", "")
+
+    # ---------------------------------------------------------
+    # Step 2: 从 vfio-pci 解绑设备
+    # ---------------------------------------------------------
+    logger.info("--- Step 2: 从 vfio-pci 解绑设备 ---")
+    for dev in PCI_DEVICES:
+        sysfs_write("/sys/bus/pci/drivers/vfio-pci/unbind", dev, ignore_missing=True)
+
+    # ---------------------------------------------------------
+    # Step 3: 重新加载 NVIDIA 核心模块
+    # ---------------------------------------------------------
+    logger.info("--- Step 3: 重新加载 NVIDIA 核心模块 ---")
+    for mod in ["nvidia", "nvidia_uvm", "nvidia_modeset", "nvidia_drm"]:
+        run_cmd(["modprobe", mod], check=False, ignore_error=True)
+
+    # ---------------------------------------------------------
+    # Step 4: 触发 Drivers Probe 绑定设备
+    # ---------------------------------------------------------
+    logger.info("--- Step 4: 触发 Drivers Probe 绑定设备 ---")
+    for dev in PCI_DEVICES:
+        sysfs_write("/sys/bus/pci/drivers_probe", dev)
+
+    verify_driver_status("nvidia")
+
+
+# ================= 交互式菜单 =================
+def interactive_menu():
+    """呈现交互式控制台菜单"""
+    print(f"\n{Colors.BOLD}{Colors.CYAN}=== NVIDIA GPU 驱动切换工具 ==={Colors.RESET}")
+    print(f"{Colors.GREEN}1.{Colors.RESET} 绑定到 VFIO (用于虚拟机直通)")
+    print(f"{Colors.GREEN}2.{Colors.RESET} 恢复 NVIDIA 原生驱动")
+    print(f"{Colors.GREEN}0.{Colors.RESET} 退出程序\n")
+
+    while True:
+        try:
+            # 提示用户输入
+            choice = input(
+                f"{Colors.BOLD}{Colors.YELLOW}请输入选项 [0-2]: {Colors.RESET}"
+            ).strip()
+
+            if choice == "1":
+                manage_hp = ask_yes_no("是否同时配置虚拟机内存大页？", default=False)
+                print("-" * 50)
+                bind_to_vfio(manage_hugepages=manage_hp)
+                break
+            elif choice == "2":
+                manage_hp = ask_yes_no("是否同时释放虚拟机内存大页？", default=False)
+                print("-" * 50)
+                bind_to_nvidia(manage_hugepages=manage_hp)
+                break
+            elif choice == "0":
+                print(f"{Colors.GREEN}已退出。{Colors.RESET}")
+                sys.exit(0)
+            else:
+                print(f"{Colors.RED}输入无效，请重新输入 0, 1 或 2。{Colors.RESET}")
+
+        # 优雅捕获 Ctrl+C 和 Ctrl+D，防止打印难看的 Traceback
+        except KeyboardInterrupt:
+            print(f"\n{Colors.YELLOW}检测到中断信号，已取消。{Colors.RESET}")
+            sys.exit(0)
+        except EOFError:
+            print(f"\n{Colors.GREEN}已退出。{Colors.RESET}")
+            sys.exit(0)
+
+
+# ================= 脚本入口 =================
+if __name__ == "__main__":
+    check_root()
+    interactive_menu()

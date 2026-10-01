@@ -1,0 +1,22 @@
+# 编辑器 / 系统
+*.swp
+.DS_Store
+
+# Python 虚拟环境与缓存
+.venv/
+__pycache__/
+*.pyc
+
+# makepkg 构建产物
+tools/nvidia-switch/pkg/
+tools/nvidia-switch/src/
+*.pkg.tar.zst
+
+# 打包 / 临时产物
+*.zip
+node_modules/
+
+# thermal diag 采样输出（保留仓库自带的示例 er1/er2.csv）
+tools/thermal-tuning/logs/*.csv
+!tools/thermal-tuning/logs/er1.csv
+!tools/thermal-tuning/logs/er2.csv

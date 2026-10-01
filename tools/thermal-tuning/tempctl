@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  tempctl 2.0 —— 极简三档温控（Hasee QNLXS / i7-13620H / RTX 4060 Laptop）
+#
+#    tempctl            查看当前状态（只读，不需要 root）
+#    sudo tempctl save     省电码字档：CPU 25W / 睿频 60% / GPU 60W（凉、安静）
+#    sudo tempctl normal   日常均衡档：CPU 45W / 睿频 90% / GPU 70W（开机默认）
+#    sudo tempctl game     游戏档：CPU 65W / EPP performance / GPU 80W（帧数优先）
+#
+#  只写内核运行时参数（RAPL / intel_pstate / NVML），不修改任何配置文件，
+#  重启即恢复主板默认；开机由 tempctl-boot.service 应用 normal。
+# =============================================================================
+set -uo pipefail
+VERSION="2.3.0"
+
+RAPL="/sys/class/powercap/intel-rapl:0"
+PSTATE="/sys/devices/system/cpu/intel_pstate"
+CPUFREQ="/sys/devices/system/cpu/cpufreq"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# 档位定义: PL1(W) PL2(W) EPP max_perf(%) GPU功耗墙(W)
+save=(25 40 power 60 60)
+normal=(45 65 balance_performance 90 70)
+game=(65 115 performance 100 80)
+# max：不设限。CPU 功耗墙放到和 PL2 同级（实际由 100°C 温度墙兜底），GPU 用硬件上限 105W
+max=(115 115 performance 100 105)
+
+die()  { echo "tempctl: $*" >&2; exit 1; }
+info() { printf '[tempctl] %s\n' "$*"; }
+
+hwmon_path() { local w=$1 d; for d in /sys/class/hwmon/hwmon*; do
+    [[ -r $d/name && "$(<"$d/name")" == "$w" ]] && { echo "$d"; return 0; }; done; return 1; }
+
+pkg_temp() { # CPU 封装温度(°C)
+    local d; d=$(hwmon_path coretemp) || return 1
+    [[ -r $d/temp1_input ]] || return 1
+    echo $(( $(<"$d/temp1_input") / 1000 ))
+}
+
+zone_temp() { # 指定热区温度(°C)，如 TCPU
+    local z n
+    for z in /sys/class/thermal/thermal_zone*; do
+        n=$(cat "$z/type" 2>/dev/null) || continue
+        [[ $n == "$1" ]] && { echo $(( $(cat "$z/temp") / 1000 )); return 0; }
+    done
+    return 1
+}
+
+gpu_field() { nvidia-smi --query-gpu="$1" --format=csv,noheader,nounits 2>/dev/null | head -1; }
+
+gpu_limit() { # 当前生效的 GPU 功耗墙(W)
+    local v; v=$(gpu_field enforced.power.limit)
+    [[ -z $v || $v == "[N/A]" ]] && v=$(gpu_field power.default_limit)
+    echo "${v%%.*}"
+}
+
+epp_now() { # 各核 EPP 的汇总
+    local p v out=""
+    for p in "$CPUFREQ"/policy*; do
+        [[ -r $p/energy_performance_preference ]] || continue
+        v=$(<"$p/energy_performance_preference")
+        case " $out " in *" $v "*) ;; *) out="$out $v";; esac
+    done
+    echo "${out# }"
+}
+
+pcore_mhz() { # 当前 P 核最高频率(MHz)
+    local p m=0 v f
+    for p in "$CPUFREQ"/policy*; do
+        f=$(cat "$p/cpuinfo_max_freq" 2>/dev/null || echo 0)
+        (( f >= 4000000 )) || continue
+        v=$(cat "$p/scaling_cur_freq" 2>/dev/null || echo 0)
+        (( v > m )) && m=$v
+    done
+    echo $(( m / 1000 ))
+}
+
+uw2w() { awk -v n="${1:-0}" 'BEGIN{ printf "%.0f", n/1000000 }'; }
+
+# 写 sysfs：成功/跳过返回 0，写失败返回 1
+wr() {
+    local f=$1 v=$2 label=$3 old new
+    if [[ ! -e $f ]]; then printf '  %-22s 跳过(不存在)\n' "$label"; return 0; fi
+    old=$(<"$f") 2>/dev/null
+    if ! printf '%s\n' "$v" >"$f" 2>/dev/null; then printf '  %-22s 写入失败\n' "$label"; return 1; fi
+    new=$(<"$f")
+    printf '  %-22s %s → %s\n' "$label" "$old" "$new"
+}
+
+nvme_temp() { # 硬盘温度(°C)
+    local d; d=$(hwmon_path nvme) || return 1
+    [[ -r $d/temp1_input ]] || return 1
+    echo $(( $(<"$d/temp1_input") / 1000 ))
+}
+
+set_epp() { # 给所有核写 EPP
+    local v=$1 p old="" n=0
+    for p in "$CPUFREQ"/policy*; do
+        [[ -w $p/energy_performance_preference ]] || continue
+        [[ -z $old ]] && old=$(<"$p/energy_performance_preference")
+        printf '%s\n' "$v" >"$p/energy_performance_preference" 2>/dev/null && n=$(( n + 1 ))
+    done
+    printf '  %-22s %s → %s（%d 核）\n' "EPP 能效偏好" "$old" "$v" "$n"
+    (( n > 0 ))
+}
+
+apply() { # apply save|normal|game|max
+    local name=$1 pl1 pl2 epp pct gpu rc=0
+    case $name in
+        save)   set -- "${save[@]}";;
+        normal) set -- "${normal[@]}";;
+        game)   set -- "${game[@]}";;
+        max)    set -- "${max[@]}";;
+        *) die "未知档位: $name（只有 save / normal / game / max）";;
+    esac
+    pl1=$1; pl2=$2; epp=$3; pct=$4; gpu=$5
+
+    info "应用 [$name] 档：CPU ${pl1}W / 睿频 ${pct}% / EPP ${epp} / GPU 墙 ${gpu}W"
+    [[ $name == max ]] && info "注意：max 档会跑到 95~100°C、风扇满转，只建议短时使用"
+    wr "$RAPL/constraint_0_power_limit_uw" $(( pl1 * 1000000 )) "CPU 长时功耗 PL1" || rc=1
+    wr "$RAPL/constraint_1_power_limit_uw" $(( pl2 * 1000000 )) "CPU 短时功耗 PL2" || rc=1
+    wr "$PSTATE/max_perf_pct" "$pct" "睿频上限" || rc=1
+    wr "$PSTATE/no_turbo" 0 "睿频开关(0=允许)" || rc=1
+    set_epp "$epp" || rc=1
+    # GPU 墙不是必需项：失败只提示，不影响退出码（避免开机服务因显卡失败而报错）
+    if nvidia-smi -pl "$gpu" >/dev/null 2>&1; then
+        printf '  %-22s %sW（出厂 %sW）\n' "GPU 功耗墙" "$(gpu_limit)" "$(gpu_field power.default_limit)"
+    else
+        printf '  %-22s 设置失败（忽略）\n' "GPU 功耗墙"
+    fi
+    (( rc == 0 )) || info "有写入失败，请看上面的提示"
+    return $rc
+}
+
+show() {
+    echo "=== tempctl $VERSION   $(date '+%F %T') ==="
+    printf '温度   封装 %s°C   热区 TCPU %s°C   硬盘 %s°C\n' \
+        "$(pkg_temp || echo '?')" "$(zone_temp TCPU || echo '?')" "$(nvme_temp || echo '?')"
+    printf 'CPU    P核 %sMHz   PL1 %sW  PL2 %sW  睿频上限 %s%%  EPP %s\n' \
+        "$(pcore_mhz)" "$(uw2w "$(cat "$RAPL/constraint_0_power_limit_uw" 2>/dev/null || echo 0)")" \
+        "$(uw2w "$(cat "$RAPL/constraint_1_power_limit_uw" 2>/dev/null || echo 0)")" \
+        "$(cat "$PSTATE/max_perf_pct" 2>/dev/null || echo '?')" "$(epp_now)"
+    printf 'GPU    %s  %s°C  %sW（墙 %sW）  %s%%  %sMHz\n' \
+        "$(gpu_field name)" "$(gpu_field temperature.gpu)" "$(gpu_field power.draw)" \
+        "$(gpu_limit)" "$(gpu_field utilization.gpu)" "$(gpu_field clocks.sm)"
+    # power-profiles-daemon 会写 EPP/no_turbo，是唯一会覆盖档位的东西，这里提示一下
+    if systemctl is-active --quiet power-profiles-daemon.service 2>/dev/null; then
+        printf '提示   power-profiles-daemon 在运行（当前档 %s）→ 它切档会覆盖 EPP，\n' \
+            "$(powerprofilesctl get 2>/dev/null || echo '?')"
+        printf '       想让它别插手：sudo bash %s/install.sh --mask-ppd\n' "$SCRIPT_DIR"
+    fi
+}
+
+usage() {
+    cat <<'EOF'
+tempctl 2.1 —— 四个档位
+
+  tempctl            查看当前状态（只读，不需要 root）
+  sudo tempctl save     省电码字档：CPU 25W / 睿频 60% / GPU 60W（凉、安静）
+  sudo tempctl normal   日常均衡档：CPU 45W / 睿频 90% / GPU 70W（开机自动应用）
+  sudo tempctl game     游戏档：CPU 65W / 睿频 100% / EPP performance / GPU 80W
+  sudo tempctl max      不设限档：CPU 115W（实际由 100°C 温度墙兜底）/ GPU 105W（硬件上限）
+
+  全是运行时设置，重启即恢复主板默认；不会修改任何配置文件。
+  想恢复默认：直接重启，或 sudo tempctl normal。
+EOF
+}
+
+main() {
+    local cmd=${1:-show}
+    case $cmd in
+        ""|show|status|st) show ;;
+        save|normal|game|max) [[ ${EUID} -eq 0 ]] || exec sudo -- "$0" "$@" ; apply "$cmd" ;;
+        -h|--help|help)    usage ;;
+        *) echo "未知命令: $cmd" >&2; usage; exit 1 ;;
+    esac
+}
+
+main "$@"
+

@@ -17,11 +17,14 @@ MyArchGuide/
 ├── docs/
 │   ├── environment.md         # 系统基本配置（显卡驱动、niri/dms、zsh、paru、常用应用）
 │   └── virtualization.md      # KVM 虚拟机与显卡直通
-└── scripts/
-    ├── README.md              # 脚本用法说明
-    ├── install.sh             # 基础系统安装（UEFI + LUKS2 + Btrfs + GRUB）
-    ├── post-install.sh        # 桌面环境安装（KDE Plasma + SDDM + Fcitx5）
-    └── check.sh               # 休眠 / 加密启动排查
+├── scripts/
+│   ├── README.md              # 脚本用法说明
+│   ├── install.sh             # 基础系统安装（UEFI + LUKS2 + Btrfs + GRUB）
+│   ├── post-install.sh        # 桌面环境安装（KDE Plasma + SDDM + Fcitx5）
+│   └── check.sh               # 休眠 / 加密启动排查
+└── tools/                     # 装机后工具集
+    ├── thermal-tuning/        # 温控四档（tempctl）+ niri 快捷键
+    └── nvidia-switch/         # 独显 vfio-pci ⇄ 原生驱动切换（Tk GUI）
 ```
 
 ## 文档索引
@@ -32,6 +35,13 @@ MyArchGuide/
 | [虚拟机与显卡直通](docs/virtualization.md) | KVM 安装与嵌套虚拟化、Windows 11 虚拟机、VirtIO-FS 文件共享、独显直通、Looking-glass、VFIO 解绑 |
 | [脚本说明](scripts/README.md) | 三个脚本的用途、运行环境与流程 |
 
+## 工具（装机后）
+
+| 工具 | 作用 | 入口 |
+| --- | --- | --- |
+| thermal-tuning | 同机 CPU/GPU 功耗与温度四档（`tempctl save/normal/game/max`）与 niri 快捷键 | [tools/thermal-tuning](tools/thermal-tuning/README.md) |
+| nvidia-switch | 独显在 vfio-pci 直通与 NVIDIA 原生驱动间一键切换（Tk GUI + pkexec） | [tools/nvidia-switch](tools/nvidia-switch/README.md) |
+
 ## 安装流程
 
 1. Arch Live ISO 中运行 [scripts/install.sh](scripts/install.sh)，装好带全盘加密与休眠的基础系统。
@@ -39,6 +49,7 @@ MyArchGuide/
 3. 按 [docs/environment.md](docs/environment.md) 配置显卡驱动、shell 与应用。
 4. 需要跑 Windows 虚拟机或做独显直通，参考 [docs/virtualization.md](docs/virtualization.md)。
 5. 休眠有问题时用 [scripts/check.sh](scripts/check.sh) 对照排查。
+6. 装机后的两件常用调优：温控用 [tools/thermal-tuning](tools/thermal-tuning/README.md)，独显直通切换用 [tools/nvidia-switch](tools/nvidia-switch/README.md)。
 
 ## 文档格式检查
 
