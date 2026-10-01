@@ -124,3 +124,22 @@ paru -S clash-party-bin
 ```
 
 > KVM 虚拟机的安装与配置（含 Windows 虚拟机、VirtIO-FS 文件共享、独显直通、Looking-glass、VFIO 解绑）已拆分到 [虚拟机与显卡直通](virtualization.md)。
+
+## 6 配置局域网代理
+
+当机器只能通过局域网内的代理（Clash、Mihomo、Squid 等）访问外网时，先导出代理环境变量，再执行 `pacman`、`paru`、`git` 等联网命令。`HTTP/HTTPS` 代理默认端口常见为 `7890`，`SOCKS5` 默认 `7891`，请按实际局域网 IP 与端口替换。
+
+```bash
+export http_proxy="http://192.168.1.10:7890"
+export https_proxy="$http_proxy"
+export ftp_proxy="$http_proxy"
+export all_proxy="$http_proxy"
+export HTTP_PROXY="$http_proxy" HTTPS_PROXY="$http_proxy" FTP_PROXY="$http_proxy" ALL_PROXY="$http_proxy"
+export no_proxy="localhost,127.0.0.1,::1" NO_PROXY="$no_proxy"
+```
+
+- `pacman`/`paru` 走 `http_proxy`/`https_proxy`，升级与装包前先导出即可。
+- 使用 SOCKS5 时把 URL 换成 `socks5://192.168.1.10:7891`。
+- `no_proxy` 放行本地回环地址，避免本机服务也被代理。
+- 只在当前终端生效用上面的 `export`；要持久化可写入 `/etc/environment`（系统级）或 `~/.zshrc`（当前用户）。
+- 安装阶段 [install.sh](../scripts/install.sh) 会提示输入局域网 IP 与端口，并在当前终端与 `arch-chroot` 内自动导出，无需手动设置。

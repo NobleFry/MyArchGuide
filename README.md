@@ -49,7 +49,7 @@ MyArchGuide/
 ## 安装流程
 
 1. 用 [scripts/make-usb.sh](scripts/make-usb.sh) 做一张 Arch Live 启动盘，详见 [docs/bootable-usb.md](docs/bootable-usb.md)。
-2. 在 Arch Live ISO 中运行 [scripts/install.sh](scripts/install.sh)，装好带全盘加密与休眠的基础系统。
+2. 在 Arch Live ISO 中运行 [scripts/install.sh](scripts/install.sh)，装好带全盘加密与休眠的基础系统（可选配置局域网代理，供 pacman/pacstrap/chroot 使用）。
 3. 进入系统后以 root 运行 [scripts/post-install.sh](scripts/post-install.sh)，安装 KDE Plasma 与桌面组件。
 4. 按 [docs/environment.md](docs/environment.md) 配置显卡驱动、shell 与应用。
 5. 需要跑 Windows 虚拟机或做独显直通，参考 [docs/virtualization.md](docs/virtualization.md)。

@@ -7,6 +7,7 @@ set -Eeuo pipefail
 # Intended to run AFTER the base installation script.
 #
 # Features:
+#   - Optional LAN proxy (HTTP/HTTPS or SOCKS5) for updates and package installs
 #   - Full system upgrade
 #   - Root/user default editor = vim
 #   - Regular wheel user setup
@@ -240,6 +241,7 @@ This script is intended to be run after the base Arch Linux
 installation is complete and the installed system has booted.
 
 Main tasks:
+  - Configure an optional LAN proxy
   - Update the system
   - Configure a regular sudo user
   - Enable multilib
@@ -266,9 +268,57 @@ echo
 echo "=== 0. Network and system update ==="
 echo
 
+# --- Optional LAN proxy ---
+echo "Proxy configuration (needed when this machine only reaches the Internet"
+echo "through a proxy on the local network):"
+echo
+echo "  1) No proxy"
+echo "  2) HTTP/HTTPS proxy"
+echo "  3) SOCKS5 proxy"
+echo
+
+read_choice PROXY_TYPE "Select proxy type [1/2/3]: " '^[123]$'
+
+PROXY_URL=""
+case "$PROXY_TYPE" in
+    1)
+        selected "No proxy"
+        ;;
+    2|3)
+        if [[ "$PROXY_TYPE" == 2 ]]; then
+            PROXY_SCHEME=http
+            PROXY_DEFAULT_PORT=7890
+        else
+            PROXY_SCHEME=socks5
+            PROXY_DEFAULT_PORT=7891
+        fi
+
+        read -r -p "Proxy address (LAN IP or hostname) [192.168.1.1]: " PROXY_HOST
+        printf '\n'
+        PROXY_HOST="${PROXY_HOST:-192.168.1.1}"
+
+        read -r -p "Proxy port [$PROXY_DEFAULT_PORT]: " PROXY_PORT
+        printf '\n'
+        PROXY_PORT="${PROXY_PORT:-$PROXY_DEFAULT_PORT}"
+        [[ "$PROXY_PORT" =~ ^[0-9]+$ ]] || die "Proxy port must be numeric."
+
+        PROXY_URL="${PROXY_SCHEME}://${PROXY_HOST}:${PROXY_PORT}"
+        export http_proxy="$PROXY_URL" https_proxy="$PROXY_URL" ftp_proxy="$PROXY_URL" all_proxy="$PROXY_URL"
+        export HTTP_PROXY="$PROXY_URL" HTTPS_PROXY="$PROXY_URL" FTP_PROXY="$PROXY_URL" ALL_PROXY="$PROXY_URL"
+        export no_proxy='localhost,127.0.0.1,::1'
+        export NO_PROXY="$no_proxy"
+        selected "Proxy: $PROXY_URL"
+        log "Proxy exported for this shell."
+        ;;
+esac
+
 log "Checking Internet connectivity..."
 
-if ! ping -c 2 -W 3 archlinux.org >/dev/null 2>&1; then
+if [[ -n "$PROXY_URL" ]]; then
+    info "Proxy configured: $PROXY_URL (the update below validates connectivity through it)."
+elif ping -c 2 -W 3 archlinux.org >/dev/null 2>&1; then
+    info "Direct Internet connection detected."
+else
     die "Internet connectivity test failed. Connect NetworkManager first and rerun the script."
 fi
 

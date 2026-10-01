@@ -77,6 +77,22 @@ confirm() {
     done
 }
 
+# Export proxy environment variables for the current shell so that pacman,
+# pacstrap, git, curl and arch-chroot inherit the proxy for the rest of this session.
+export_proxy() {
+    local url="$1"
+    export http_proxy="$url" https_proxy="$url" ftp_proxy="$url" all_proxy="$url"
+    export HTTP_PROXY="$url" HTTPS_PROXY="$url" FTP_PROXY="$url" ALL_PROXY="$url"
+    export no_proxy='localhost,127.0.0.1,::1'
+    export NO_PROXY="$no_proxy"
+}
+
+unset_proxy() {
+    unset http_proxy https_proxy ftp_proxy all_proxy
+    unset HTTP_PROXY HTTPS_PROXY FTP_PROXY ALL_PROXY
+    unset no_proxy NO_PROXY
+}
+
 require_command() {
     command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
 }
@@ -176,17 +192,63 @@ case "$NETWORK_TYPE" in
         ;;
 esac
 
+# ============================================================
+# 2. PROXY
+# ============================================================
+printf '\n=== Proxy configuration ===\n\n'
+printf 'Enter the LAN address and port of your proxy if you need one.\n'
+printf 'You can leave this off when using a direct connection.\n\n'
+printf '1) No proxy\n'
+printf '2) HTTP/HTTPS proxy\n'
+printf '3) SOCKS5 proxy\n\n'
+read_choice 'Select proxy type' '1/2/3'
+PROXY_TYPE="$REPLY_VALUE"
+
+PROXY_URL=''
+if [[ "$PROXY_TYPE" == 2 || "$PROXY_TYPE" == 3 ]]; then
+    if [[ "$PROXY_TYPE" == 2 ]]; then
+        PROXY_SCHEME=http
+        PROXY_DEFAULT_PORT=7890
+    else
+        PROXY_SCHEME=socks5
+        PROXY_DEFAULT_PORT=7891
+    fi
+    read_text 'Proxy address (LAN IP or hostname)' '192.168.1.1'
+    PROXY_HOST="$REPLY_VALUE"
+    read_text 'Proxy port' "$PROXY_DEFAULT_PORT"
+    PROXY_PORT="$REPLY_VALUE"
+    [[ "$PROXY_PORT" =~ ^[0-9]+$ ]] || die 'Proxy port must be numeric.'
+    PROXY_URL="${PROXY_SCHEME}://${PROXY_HOST}:${PROXY_PORT}"
+    export_proxy "$PROXY_URL"
+    log "Proxy exported for this shell: $PROXY_URL"
+    info 'The same proxy variables are re-exported inside arch-chroot.'
+else
+    unset_proxy
+    log 'No proxy configured; using a direct connection.'
+fi
+
 log 'Testing network connectivity...'
 if ping -c 3 -W 3 archlinux.org >/dev/null 2>&1; then
     log 'Internet connection is working.'
 elif ping -c 3 -W 3 1.1.1.1 >/dev/null 2>&1; then
-    die 'IP connectivity works, but DNS resolution failed.'
+    if [[ -z "$PROXY_URL" ]]; then
+        die 'IP connectivity works, but DNS resolution failed.'
+    fi
+    warn 'Direct DNS resolution failed; continuing with the configured proxy.'
+elif [[ -n "$PROXY_URL" ]]; then
+    if ! command -v curl >/dev/null 2>&1; then
+        warn 'curl is not available; skipping the proxy connectivity test.'
+    elif curl -fsS --max-time 10 -x "$PROXY_URL" -o /dev/null https://archlinux.org >/dev/null 2>&1; then
+        log "Internet is reachable through the proxy: $PROXY_URL"
+    else
+        die "No direct Internet connection and the proxy did not respond: $PROXY_URL"
+    fi
 else
     die 'No Internet connection detected.'
 fi
 
 # ============================================================
-# 2. CLOCK
+# 3. CLOCK
 # ============================================================
 log 'Enabling NTP synchronization...'
 timedatectl set-ntp true
@@ -194,7 +256,7 @@ sleep 2
 timedatectl status --no-pager || true
 
 # ============================================================
-# 3. MIRRORS
+# 4. MIRRORS
 # ============================================================
 printf '\n=== Package mirrors ===\n\n'
 printf '1) China mirrors (TUNA + USTC)\n'
@@ -220,7 +282,7 @@ log 'Refreshing package databases and keyring...'
 pacman -Sy --needed --noconfirm archlinux-keyring
 
 # ============================================================
-# 4. DISK / PARTITIONS
+# 5. DISK / PARTITIONS
 # ============================================================
 printf '\n=== Disk configuration ===\n\n'
 lsblk -o NAME,PATH,SIZE,TYPE,FSTYPE,FSVER,PARTTYPENAME,LABEL,MOUNTPOINTS,MODEL
@@ -265,7 +327,7 @@ read_text 'Type ERASE-ROOT to continue'
 [[ "$REPLY_VALUE" == 'ERASE-ROOT' ]] || die 'Installation cancelled.'
 
 # ============================================================
-# 5. EFI
+# 6. EFI
 # ============================================================
 printf '\n=== EFI System Partition ===\n\n'
 EFI_FS="$(lsblk -ndo FSTYPE "$EFI_PART" || true)"
@@ -287,7 +349,7 @@ else
 fi
 
 # ============================================================
-# 6. LUKS2 + BTRFS
+# 7. LUKS2 + BTRFS
 # ============================================================
 printf '\n=== LUKS2 encryption ===\n\n'
 info 'You will be prompted for the LUKS password twice.'
@@ -311,7 +373,7 @@ mount -o 'noatime,subvol=@swap' /dev/mapper/cryptroot /mnt/swap
 mount "$EFI_PART" /mnt/boot
 
 # ============================================================
-# 7. SWAP / HIBERNATION
+# 8. SWAP / HIBERNATION
 # ============================================================
 printf '\n=== Swap and hibernation ===\n\n'
 MEM_KIB="$(awk '/MemTotal:/ {print $2}' /proc/meminfo)"
@@ -354,7 +416,7 @@ fi
 pause
 
 # ============================================================
-# 8. CPU MICROCODE
+# 9. CPU MICROCODE
 # ============================================================
 CPU_VENDOR="$(awk -F ': ' '/vendor_id/ {print $2; exit}' /proc/cpuinfo)"
 MICROCODE=''
@@ -366,7 +428,7 @@ esac
 [[ -n "$MICROCODE" ]] && log "Microcode package: $MICROCODE"
 
 # ============================================================
-# 9. INSTALL PACKAGES
+# 10. INSTALL PACKAGES
 # ============================================================
 printf '\n=== Installing Arch Linux ===\n\n'
 PACKAGES=(
@@ -381,7 +443,7 @@ PACKAGES=(
 pacstrap -K /mnt "${PACKAGES[@]}"
 
 # ============================================================
-# 10. FSTAB
+# 11. FSTAB
 # ============================================================
 log 'Generating fstab...'
 genfstab -U /mnt > /mnt/etc/fstab
@@ -392,7 +454,7 @@ printf '\nGenerated /etc/fstab:\n\n'
 cat /mnt/etc/fstab
 
 # ============================================================
-# 11. WINDOWS ESP (OPTIONAL)
+# 12. WINDOWS ESP (OPTIONAL)
 # ============================================================
 printf '\n=== Windows dual boot ===\n\n'
 WINDOWS_EFI_PART=''
@@ -412,7 +474,7 @@ else
 fi
 
 # ============================================================
-# 12. SYSTEM SETTINGS
+# 13. SYSTEM SETTINGS
 # ============================================================
 printf '\n=== System configuration ===\n\n'
 read_text 'Hostname' 'archlinux'
@@ -437,7 +499,7 @@ LUKS_UUID="$(cryptsetup luksUUID "$ROOT_PART")"
 log "LUKS UUID: $LUKS_UUID"
 
 # ============================================================
-# 13. PASS CONFIG TO CHROOT
+# 14. PASS CONFIG TO CHROOT
 # ============================================================
 CONFIG_FILE=/mnt/root/arch-install.conf
 {
@@ -448,11 +510,12 @@ CONFIG_FILE=/mnt/root/arch-install.conf
     printf 'SWAP_OFFSET=%q\n' "$SWAP_OFFSET"
     printf 'CREATE_USER=%q\n' "$CREATE_USER"
     printf 'USERNAME=%q\n' "$USERNAME"
+    printf 'PROXY_URL=%q\n' "$PROXY_URL"
 } > "$CONFIG_FILE"
 chmod 600 "$CONFIG_FILE"
 
 # ============================================================
-# 14. NON-INTERACTIVE CHROOT CONFIGURATION SCRIPT
+# 15. NON-INTERACTIVE CHROOT CONFIGURATION SCRIPT
 # ============================================================
 POSTINSTALL=/mnt/root/arch-postinstall.sh
 cat > "$POSTINSTALL" <<'CHROOT_SCRIPT'
@@ -462,6 +525,16 @@ source /root/arch-install.conf
 
 log() { printf '[+] %s\n' "$*"; }
 die() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
+
+# Re-export the proxy inside the chroot so pacman and other tools keep working
+# even though this runs in a different environment.
+if [[ -n "${PROXY_URL:-}" ]]; then
+    export http_proxy="$PROXY_URL" https_proxy="$PROXY_URL" ftp_proxy="$PROXY_URL" all_proxy="$PROXY_URL"
+    export HTTP_PROXY="$PROXY_URL" HTTPS_PROXY="$PROXY_URL" FTP_PROXY="$PROXY_URL" ALL_PROXY="$PROXY_URL"
+    export no_proxy='localhost,127.0.0.1,::1'
+    export NO_PROXY="$no_proxy"
+    log "Proxy enabled inside chroot: $PROXY_URL"
+fi
 
 log 'Configuring timezone...'
 ln -sf "/usr/share/zoneinfo/$TIMEZONE" /etc/localtime
@@ -560,13 +633,14 @@ bash -n "$POSTINSTALL"
 
 printf '\n=== Configuring installed system ===\n\n'
 # This executes a non-interactive script inside the new root. It does not open
-# an interactive nested shell.
+# an interactive nested shell. The exported proxy variables are inherited here,
+# and the script also re-exports them from /root/arch-install.conf.
 arch-chroot /mnt /root/arch-postinstall.sh
 
 rm -f "$POSTINSTALL" "$CONFIG_FILE"
 
 # ============================================================
-# 15. VERIFY
+# 16. VERIFY
 # ============================================================
 printf '\n=== Installation verification ===\n\n'
 [[ -f /mnt/boot/grub/grub.cfg ]] || die 'GRUB configuration is missing.'
@@ -591,6 +665,7 @@ printf 'Timezone       : %s\n' "$TIMEZONE"
 printf 'Swap           : %s GiB\n' "$SWAP_SIZE"
 printf 'Hibernation    : %s\n' "$HIBERNATION"
 [[ "$HIBERNATION" == yes ]] && printf 'Resume offset   : %s\n' "$SWAP_OFFSET"
+[[ -n "$PROXY_URL" ]] && printf 'Proxy          : %s\n' "$PROXY_URL"
 
 printf '\nUseful checks before reboot:\n\n'
 printf '  cat /mnt/etc/fstab\n'

@@ -16,12 +16,13 @@
 bash install.sh
 ```
 
-交互式流程：网络 → 时间同步 → 镜像源 → 分区（可选 cfdisk）→ EFI → LUKS2 + Btrfs 子卷 → swap/休眠 → CPU microcode → pacstrap → fstab → Windows 双系统 ESP → 主机名/时区/用户 → chroot 配置 GRUB 与 mkinitcpio → 校验。
+交互式流程：网络 → 代理（可选）→ 时间同步 → 镜像源 → 分区（可选 cfdisk）→ EFI → LUKS2 + Btrfs 子卷 → swap/休眠 → CPU microcode → pacstrap → fstab → Windows 双系统 ESP → 主机名/时区/用户 → chroot 配置 GRUB 与 mkinitcpio → 校验。
 
 - Btrfs 子卷布局：`@` → `/`，`@home` → `/home`，`@swap` → `/swap`
 - 挂载选项：`noatime,compress=zstd:3,discard=async`
 - 复用 Windows 的 ESP 时**不要格式化**，脚本会二次确认
 - 破坏性操作需手动输入 `ERASE-ROOT` / `FORMAT-EFI` 确认
+- 代理为可选：输入局域网 IP 与端口（HTTP/HTTPS 默认 7890，SOCKS5 默认 7891），脚本会在当前 Live 终端 `export` 代理变量，并在 `arch-chroot` 内重新导出
 
 ## post-install.sh
 
@@ -30,6 +31,8 @@ sudo bash post-install.sh
 ```
 
 需要先有网络与 root 权限；会执行全系统升级 `pacman -Syu`，结束时可选择重启进入 SDDM。
+
+开头可选择配置局域网代理（同 `install.sh`，输入 IP 与端口），导出后供 `pacman -Syu` 与后续装包使用；直连时选 “No proxy”。
 
 ## check.sh
 
